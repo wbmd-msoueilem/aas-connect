@@ -3,12 +3,10 @@ import { Connection, Request as TediousRequest, type ColumnValue, type Connectio
 import type { AASData } from '@/services/azure-analysis-services';
 
 // Ensure environment variables are loaded
-const aasConnectionStringEnv = process.env.NEXT_PUBLIC_AAS_SERVER_URL; // Expected format: "asazure://<region_host>/<server_name>" e.g., "asazure://eastus.asazure.windows.net/resturantsas"
-const aasDatabaseNameEnv = process.env.NEXT_PUBLIC_AAS_DATABASE; // e.g., "adventureworks"
+const aasConnectionStringEnv = process.env.NEXT_PUBLIC_AAS_SERVER_URL; 
+const aasDatabaseNameEnv = process.env.NEXT_PUBLIC_AAS_DATABASE; 
 
 // Basic DAX query - adjust to your AdventureWorks model
-// This query attempts to get Sales Amount by Product Category and Calendar Year.
-// Replace 'Sales', 'Product'[Product Category Name], 'Date'[Calendar Year] with actual column names from your model.
 const DAX_QUERY = `
 EVALUATE
   SUMMARIZECOLUMNS(
@@ -33,7 +31,7 @@ function parseRow(row: ColumnValue[]): AASData {
 
 interface ParsedAasServerInfo {
   fqdn: string | null;
-  aasServerName?: string; // The specific AAS server instance name, e.g., "resturantsas"
+  aasServerName?: string; 
 }
 
 // Helper to parse AAS connection string like "asazure://eastus.asazure.windows.net/resturantsas"
@@ -42,26 +40,21 @@ function parseAasConnectionString(connectionString: string | undefined): ParsedA
   
   let serverIdentifier = connectionString;
   if (serverIdentifier.startsWith("asazure://")) {
-    serverIdentifier = serverIdentifier.substring("asazure://".length); // e.g., "eastus.asazure.windows.net/resturantsas"
+    serverIdentifier = serverIdentifier.substring("asazure://".length); 
   }
   
-  const parts = serverIdentifier.split('/'); // e.g., ["eastus.asazure.windows.net", "resturantsas"]
+  const parts = serverIdentifier.split('/'); 
   
   if (parts.length === 2 && parts[0].includes("asazure.windows.net")) {
-    // parts[0] is the regional host (FQDN for Tedious), e.g., "eastus.asazure.windows.net"
-    // parts[1] is the AAS server instance name, e.g., "resturantsas"
     return { fqdn: parts[0], aasServerName: parts[1] }; 
   }
   
-  // Handles cases where the input might already be a plain FQDN like "myinstance.eastus.asazure.windows.net"
-  // (though this format is less common for the NEXT_PUBLIC_AAS_SERVER_URL which includes the protocol and instance)
   if (parts.length === 1 && serverIdentifier.includes("asazure.windows.net")) {
-    return { fqdn: serverIdentifier };
+    return { fqdn: serverIdentifier, aasServerName: undefined };
   }
 
   console.warn(`Unexpected AAS connection string format: ${connectionString}. Attempting to use identifier: ${serverIdentifier} as FQDN.`);
-  // Fallback: use the processed identifier as FQDN. This might lead to issues if it's not a valid FQDN.
-  return { fqdn: serverIdentifier }; 
+  return { fqdn: serverIdentifier, aasServerName: undefined }; 
 }
 
 const parsedAasServerInfo = parseAasConnectionString(aasConnectionStringEnv);
@@ -79,7 +72,7 @@ export async function POST(request: NextRequest) {
   const accessToken = authHeader.split(' ')[1];
 
   const config: ConnectionConfig = {
-    server: parsedAasServerInfo.fqdn, // e.g., "eastus.asazure.windows.net"
+    server: parsedAasServerInfo.fqdn, // Use the FQDN (e.g., "eastus.asazure.windows.net")
     authentication: {
       type: 'azure-active-directory-access-token',
       options: {
@@ -87,22 +80,20 @@ export async function POST(request: NextRequest) {
       },
     },
     options: {
-      database: aasDatabaseNameEnv, // e.g., "adventureworks"
+      database: aasDatabaseNameEnv, // Use the AAS database name (e.g., "adventureworks")
       encrypt: true, 
       connectTimeout: 30000, 
       requestTimeout: 30000, 
       rowCollectionOnRequestCompletion: true,
-      // Tedious default port is 1433. AAS XMLA endpoint is typically 443 (HTTPS).
-      // This is a fundamental mismatch.
+      // port: 1433, // Default for Tedious. AAS XMLA is typically on port 443 (HTTPS).
+                   // Setting port to 443 here would make Tedious try to speak TDS to an HTTPS/XMLA endpoint.
     },
   };
 
-  // If an AAS server name (like "resturantsas") was parsed, try setting it as instanceName.
-  // This is a long shot because AAS instances are not SQL Server named instances,
-  // and Tedious uses instanceName to query SQL Server Browser service (UDP 1434), which is not applicable here.
-  if (parsedAasServerInfo.aasServerName && config.options) {
-    config.options.instanceName = parsedAasServerInfo.aasServerName;
-  }
+  // DO NOT set instanceName for AAS when using Tedious in this manner.
+  // The 'aasServerName' (e.g., "resturantsas") is part of the AAS path, not a SQL Server instance name.
+  // If 'instanceName' is set, Tedious will try to connect to 'fqdn\aasServerName',
+  // which is incorrect for AAS and causes the "Failed to connect to server\instance" error.
 
   return new Promise((resolve) => {
     const connection = new Connection(config);
@@ -114,10 +105,8 @@ export async function POST(request: NextRequest) {
       if (err) {
         console.error('Connection Failed:', err);
         connectionError = err;
-        // If connection fails to establish, 'end' might not fire or might fire after this.
-        // Ensure we resolve if this is the terminal error.
-        // Tedious might close the connection automatically on a failed connect event.
-        // No need to call connection.close() here if it's already handled or not open.
+        // Ensure 'end' or 'error' event on connection will handle resolution.
+        // No need to call connection.close() here if it's not open or Tedious handles it.
         return;
       }
       console.log('Successfully connected to Azure Analysis Services (or at least connection attempt initiated with Tedious).');
@@ -126,35 +115,36 @@ export async function POST(request: NextRequest) {
 
     connection.on('end', () => {
         console.log('Connection closed.');
-        // This event fires after connection.close() is called AND all operations are finished,
-        // or if the connection was terminated for other reasons.
         if (connectionError || requestError) {
              const finalError = connectionError || requestError;
              resolve(NextResponse.json({ message: `Failed to connect to AAS or execute query: ${finalError?.message}` }, { status: 500 }));
-        } else if (results.length === 0) { 
-             console.warn("Query might have executed but returned no data, or an issue occurred without setting an error explicitly.");
-             resolve(NextResponse.json([])); // Return empty array if no data and no explicit error.
+        } else if (results.length === 0 && !requestError) { // Check !requestError here
+             console.warn("Query might have executed but returned no data, or an issue occurred without setting an error explicitly (and no connection error).");
+             resolve(NextResponse.json([])); 
         }
-        // If results have data, it's handled by request.on('requestCompleted') before connection.close() is called.
+        // If results have data and no errors, it's handled by request.on('requestCompleted').
     });
     
     connection.on('error', (err) => {
-        // Handles errors that occur on the connection object itself.
         console.error('Connection object error event:', err);
-        if (!connectionError) connectionError = err; // Capture first connection error
+        if (!connectionError) connectionError = err; 
         // Tedious usually handles closing the connection on fatal errors.
+        // If 'end' doesn't fire or resolve correctly after this, this error might be lost.
+        // To be safe, consider resolving here if it's a terminal state not covered by 'end'.
+        // However, this might lead to double resolution if 'end' also resolves.
+        // Let's rely on 'end' to handle the final resolution.
     });
 
 
     function executeStatement() {
       const tediousRequest = new TediousRequest(DAX_QUERY, (err, rowCount) => {
         if (err) {
-          console.error('DAX Query Execution Error (TediousRequest constructor callback):', err);
+          console.error('DAX Query Execution Error (TediousRequest callback):', err);
           if(!requestError && !connectionError) requestError = err; 
         } else {
           console.log(`DAX Query request processed by Tedious, ${rowCount} rows potentially available.`);
         }
-        // Don't close connection here. Let 'requestCompleted' or 'end' handle it.
+        // Do not close connection here. Let 'requestCompleted' or 'end' handle it.
       });
 
       tediousRequest.on('row', (columns) => {
@@ -163,11 +153,10 @@ export async function POST(request: NextRequest) {
       
       tediousRequest.on('requestCompleted', () => {
          console.log('TediousRequest: requestCompleted event.');
-         // This is the ideal place to resolve with results if no prior errors.
-         if (!connectionError && !requestError) {
+         if (!connectionError && !requestError) { // Ensure no prior errors
             resolve(NextResponse.json(results));
          } else {
-            const finalError = connectionError || requestError;
+            const finalError = connectionError || requestError; // requestError might be more specific here
             resolve(NextResponse.json({ message: `DAX query execution failed or connection error: ${finalError?.message}` }, { status: 500 }));
          }
          if (!connection.closed) {
@@ -175,32 +164,33 @@ export async function POST(request: NextRequest) {
          }
       });
       
-      tediousRequest.on('error', (err) => {
+      tediousRequest.on('error', (err) => { // Error specific to this TediousRequest object
         console.error('TediousRequest object error event:', err);
         if(!requestError && !connectionError) requestError = err;
-        // 'requestCompleted' should still fire after this, or connection 'end' will handle resolution.
-        // If connection is still open and this error is fatal for the request, ensure it's closed.
-        // However, Tedious might manage this. Closing prematurely here could suppress 'requestCompleted'.
+        // 'requestCompleted' should still fire. Rely on it or 'end' for resolution.
       });
 
+      // Guard against executing SQL if connection already failed
+      if (connectionError) {
+          console.error("Skipping execSql due to prior connection failure:", connectionError.message);
+          // Resolve based on connectionError. 'end' event should also handle this path.
+          // To prevent double resolution, rely on 'end' or 'connect' error handling.
+          // If connection.close() is not called, 'end' might not fire.
+          if (!connection.closed) {
+            // connection.close(); // Let 'end' or error event handle this.
+          }
+          // If 'connect' error already happened, we might not need to resolve again here if 'end' covers it.
+          // For safety, ensure resolution if 'end' is not guaranteed or if connection isn't cleanly closing.
+          // However, the 'connect' error handler currently doesn't resolve, it sets connectionError and returns.
+          // The 'end' handler is the primary place for resolving with errors.
+          return; 
+      }
+      
       try {
-        // Check if connection attempt failed already (connectionError would be set by 'connect' event handler)
-        if (connectionError) {
-            console.error("Skipping execSql due to prior connection failure:", connectionError.message);
-            // Resolve with the existing connectionError. 'end' event should also handle this.
-            // To be safe, if connection.close() hasn't been called or isn't pending:
-            if (!connection.closed) {
-                 // connection.close(); // Let 'end' event handle resolution after close.
-            }
-            // Resolve here only if 'end' is not guaranteed to fire or resolve correctly.
-            // resolve(NextResponse.json({ message: `Failed to execute query due to connection error: ${connectionError.message}` }, { status: 500 }));
-            return; 
-        }
         connection.execSql(tediousRequest);
       } catch (execError: any) {
         console.error('Synchronous error executing SQL with Tedious:', execError);
         if(!requestError && !connectionError) requestError = execError;
-        // Resolve here as a fallback if the request events don't fire.
         resolve(NextResponse.json({ message: `Synchronous error during query execution: ${requestError?.message}` }, { status: 500 }));
         if (!connection.closed) {
           connection.close();
@@ -209,12 +199,14 @@ export async function POST(request: NextRequest) {
     }
 
     try {
+        // Attempt to connect. Error handled by 'connect', 'error', and 'end' events.
         connection.connect(); 
     } catch (e: any) {
+        // This catch block for connection.connect() is unlikely to be hit for async errors.
+        // Tedious .connect() typically emits 'connect' with error or 'error' event.
         console.error("Synchronous failure to initiate connection (rare with Tedious .connect()):", e);
-        connectionError = e; // Capture synchronous error
+        connectionError = e; 
         resolve(NextResponse.json({ message: `Failed to initiate connection to AAS: ${e.message}` }, { status: 500 }));
     }
   });
 }
-
