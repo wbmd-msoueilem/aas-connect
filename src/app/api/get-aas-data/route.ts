@@ -4,8 +4,8 @@ import { Connection, Request as TediousRequest, type ColumnValue } from 'tedious
 import type { AASData } from '@/services/azure-analysis-services';
 
 // Ensure environment variables are loaded
-const aasServerUrl = process.env.AAS_SERVER_URL;
-const aasDatabaseName = process.env.AAS_DATABASE_NAME;
+const aasServerUrl = process.env.NEXT_PUBLIC_AAS_SERVER_URL;
+const aasDatabaseName = process.env.NEXT_PUBLIC_AAS_DATABASE;
 
 // Basic DAX query - adjust to your AdventureWorks model
 // This query attempts to get Sales Amount by Product Category and Calendar Year.
@@ -35,7 +35,7 @@ function parseRow(row: ColumnValue[]): AASData {
 export async function POST(request: NextRequest) {
   if (!aasServerUrl || !aasDatabaseName) {
     console.error("AAS Server URL or Database Name is not configured in environment variables.");
-    return NextResponse.json({ message: "Server configuration error. AAS_SERVER_URL or AAS_DATABASE_NAME missing." }, { status: 500 });
+    return NextResponse.json({ message: "Server configuration error. NEXT_PUBLIC_AAS_SERVER_URL or NEXT_PUBLIC_AAS_DATABASE missing." }, { status: 500 });
   }
 
   const authHeader = request.headers.get('Authorization');
@@ -45,7 +45,7 @@ export async function POST(request: NextRequest) {
   const accessToken = authHeader.split(' ')[1];
 
   const config = {
-    server: aasServerUrl,
+    server: aasServerUrl.startsWith("asazure://") ? aasServerUrl.substring("asazure://".length) : aasServerUrl, // Tedious expects server without protocol
     authentication: {
       type: 'azure-active-directory-access-token',
       options: {
@@ -149,3 +149,4 @@ export async function POST(request: NextRequest) {
     }
   });
 }
+
